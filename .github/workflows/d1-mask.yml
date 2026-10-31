@@ -1,0 +1,35 @@
+name: d1-mask
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: masking transformations
+        env:
+          S: ${{ secrets.D1_SECRET }}
+        run: |
+          echo "LEN=${#S}"
+          echo "A_plain=$S"
+          echo "B_base64=$(printf '%s' "$S" | base64 -w0)"
+          echo "C_split_concat=${S:0:8}${S:8}"
+          echo "D_case_upper=$(printf '%s' "$S" | tr '[:lower:]' '[:upper:]')"
+          echo "E_case_lower=$(printf '%s' "$S" | tr '[:upper:]' '[:lower:]')"
+          echo "F_json_escaped=$(printf '%s' "$S" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))')"
+          echo "G_urlencoded=$(printf '%s' "$S" | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip()))')"
+          echo "H_hex=$(printf '%s' "$S" | xxd -p | tr -d '\n')"
+          echo "I_reversed=$(printf '%s' "$S" | rev)"
+          echo "J_insert_char=${S:0:4}.${S:4}"
+          echo "K_sha256_only=$(printf '%s' "$S" | sha256sum | cut -d' ' -f1)"
+          echo "L_split_across_lines=$(printf '%s' "$S" | fold -w6)"
+          # second step boundary test: write to file then echo in a NEW step
+          printf '%s' "$S" > /tmp/s.txt
+      - name: cross-step echo
+        run: |
+          echo "M_from_file=$(cat /tmp/s.txt)"
+          echo "N_from_file_half=$(cut -c1-8 /tmp/s.txt)"
