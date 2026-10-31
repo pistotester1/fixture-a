@@ -1,0 +1,67 @@
+name: d1-cache
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: tag for the cache key
+        required: true
+        default: t1
+  pull_request_target:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: context
+        run: |
+          echo "EVENT=${{ github.event_name }}"
+          echo "REF_NAME=${GITHUB_REF_NAME}"
+          echo "REF=${GITHUB_REF}"
+          echo "BASE_REF=${{ github.base_ref }}"
+          echo "HEAD_REF=${{ github.head_ref }}"
+          echo "PR_HEAD_SHA=${{ github.event.pull_request.head.sha }}"
+          echo "PR_BASE_SHA=${{ github.event.pull_request.base.sha }}"
+          echo "PR_FROM_FORK=${{ github.event.pull_request.head.repo.fork }}"
+          echo "PR_HEAD_REPO=${{ github.event.pull_request.head.repo.full_name }}"
+
+      - name: restore (lookup only) before writing
+        id: pre
+        uses: actions/cache/restore@v4
+        with:
+          path: cache-dir
+          key: d1-cache-nokey-${{ github.event_name }}-${{ inputs.tag || github.run_id }}
+          restore-keys: |
+            d1-cache-
+
+      - name: what was restored
+        run: |
+          echo "PRE_HIT=${{ steps.pre.outputs.cache-hit }}"
+          echo "PRE_MATCHED=${{ steps.pre.outputs.cache-matched-key }}"
+          echo "--- content ---"
+          cat cache-dir/marker.txt 2>/dev/null || echo "(no marker.txt restored)"
+
+      - name: write our own entry
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          mkdir -p cache-dir
+          echo "saved_from_ref=${GITHUB_REF_NAME} tag=${{ inputs.tag }} run=${{ github.run_id }}" > cache-dir/marker.txt
+          cat cache-dir/marker.txt
+
+      - name: save
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/cache/save@v4
+        with:
+          path: cache-dir
+          key: d1-cache-${{ inputs.tag }}-${{ github.run_id }}
+
+      - name: save from PR context (fork path)
+        if: ${{ github.event_name == 'pull_request_target' }}
+        uses: actions/cache/save@v4
+        with:
+          path: cache-dir
+          key: d1-cache-forkpr-${{ github.run_id }}
