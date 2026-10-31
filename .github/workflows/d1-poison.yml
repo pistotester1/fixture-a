@@ -1,0 +1,60 @@
+name: d1-poison
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: tag
+        required: false
+        default: t1
+      rkey:
+        description: restore key prefix
+        required: false
+        default: d1poison-
+
+permissions:
+  contents: read
+
+jobs:
+  poison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: context
+        run: |
+          echo "EVENT=${{ github.event_name }}"
+          echo "REF=${GITHUB_REF}"
+          echo "REF_NAME=${GITHUB_REF_NAME}"
+          echo "HEAD_REPO=${{ github.event.pull_request.head.repo.full_name }}"
+          echo "HEAD_IS_FORK=${{ github.event.pull_request.head.repo.fork }}"
+          echo "BASE_REPO=${{ github.repository }}"
+
+      - name: restore before write
+        id: pre
+        uses: actions/cache/restore@v4
+        with:
+          path: cache-dir
+          key: d1poison-nowrite-${{ github.run_id }}
+          restore-keys: |
+            ${{ inputs.rkey }}
+
+      - name: restore outcome
+        run: |
+          echo "PRE_HIT=${{ steps.pre.outputs.cache-hit }}"
+          echo "PRE_MATCHED=${{ steps.pre.outputs.cache-matched-key }}"
+          cat cache-dir/marker.txt 2>/dev/null || echo "(nothing restored)"
+
+      - name: write POISON content then save
+        run: |
+          mkdir -p cache-dir
+          echo "POISON_FROM=${{ github.event.pull_request.head.repo.full_name }} event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF} run=${GITHUB_RUN_ID}" > cache-dir/marker.txt
+          cat cache-dir/marker.txt
+      - name: save (stable key so a later main run can restore it)
+        uses: actions/cache/save@v4
+        with:
+          path: cache-dir
+          key: ${{ inputs.tag && format('d1poison-{0}', inputs.tag) || 'd1poison-fixed' }}
+
+      - name: ls
+        run: ls -la
