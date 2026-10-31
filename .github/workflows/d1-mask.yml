@@ -1,6 +1,15 @@
 name: d1-mask
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: tag
+        required: false
+        default: t1
+      rkey:
+        description: unused
+        required: false
+        default: x
 
 permissions:
   contents: read
