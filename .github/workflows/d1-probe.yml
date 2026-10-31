@@ -15,7 +15,6 @@ permissions:
   actions: write
   statuses: write
   checks: write
-  metadata: read
 
 jobs:
   probe:
