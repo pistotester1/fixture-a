@@ -1,0 +1,139 @@
+name: d1-probe
+on:
+  workflow_dispatch:
+    inputs:
+      marker:
+        description: correlation marker
+        required: true
+        default: m0
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: read
+  actions: write
+  statuses: write
+  checks: write
+  metadata: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: job token shape
+        env:
+          JT: ${{ github.token }}
+        run: |
+          echo "TOKEN_LEN=${#JT}"
+          echo "TOKEN_PREFIX4=$(echo "$JT" | cut -c1-4)"
+          echo "GITHUB_TOKEN_ENV_LEN=${#GITHUB_TOKEN}"
+          echo "ACTOR=${{ github.actor }} REPO=${{ github.repository }} EVENT=${{ github.event_name }}"
+          echo "RUN_ID=${{ github.run_id }} RUN_ATTEMPT=${{ github.run_attempt }}"
+
+      - name: api reach matrix
+        env:
+          JT: ${{ github.token }}
+          MARKER: ${{ inputs.marker }}
+        run: |
+          mkdir -p out
+          : > /tmp/probes.ndjson
+          probe() {
+            label="$1"; method="$2"; path="$3"; body="${4:-}"
+            if [ -n "$body" ]; then
+              code=$(curl -sS -o /tmp/b.json -w '%{http_code}' -X "$method" \
+                -H "Authorization: Bearer $JT" -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" -d "$body" "https://api.github.com$path")
+            else
+              code=$(curl -sS -o /tmp/b.json -w '%{http_code}' -X "$method" \
+                -H "Authorization: Bearer $JT" -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com$path")
+            fi
+            snippet=$(head -c 500 /tmp/b.json | tr -d '\r\n' | sed 's/"/SQ/g')
+            printf '{"label":"%s","method":"%s","path":"%s","status":%s,"body_head":"%s"}\n' \
+              "$label" "$method" "$path" "${code:-0}" "$snippet" >> /tmp/probes.ndjson
+            echo "PROBE $label $method $path -> $code"
+          }
+
+          probe token_user            GET  /user
+          probe installation_repos    GET  '/installation/repositories?per_page=100'
+          probe rate_limit            GET  /rate_limit
+          probe own_repo              GET  /repos/pistotester3/fixture-a
+          probe same_owner_public     GET  /repos/pistotester3/fixture-b
+          probe other_org_public      GET  /repos/pistofixtures-23/fixture-c
+          probe priv_outside_repo     GET  /repos/b74-hunt-labs/b74-priv
+          probe priv_outside_content  GET  '/repos/b74-hunt-labs/b74-priv/contents/secret-data.txt'
+          probe priv_outside_xfer     GET  /repos/b74-hunt-labs/b74-xfer-pkg
+          probe org_meta_outside      GET  /orgs/b74-hunt-labs
+          probe org_members_outside   GET  /orgs/b74-hunt-labs/members
+          probe self_pkgs             GET  '/user/packages?package_type=container'
+          probe search_code_outside   GET  '/search/code?q=repo%3Ab74-hunt-labs%2Fb74-priv+secret'
+          probe search_repos          GET  '/search/repositories?q=fixture-a'
+          probe own_secrets           GET  /repos/pistotester3/fixture-a/actions/secrets
+          probe own_artifacts         GET  '/repos/pistotester3/fixture-a/actions/artifacts?per_page=5'
+          probe own_cache             GET  '/repos/pistotester3/fixture-a/actions/caches'
+          probe own_workflows         GET  '/repos/pistotester3/fixture-a/actions/workflows'
+          probe outside_issues        GET  '/repos/b74-hunt-labs/b74-priv/issues'
+          probe outside_commits       GET  '/repos/b74-hunt-labs/b74-priv/commits?per_page=1'
+          probe graphql_self          POST /graphql '{"query":"{viewer{login}}"}'
+          probe graphql_outside       POST /graphql '{"query":"{repository(owner:\"b74-hunt-labs\",name:\"b74-priv\"){name isPrivate}}"}'
+          probe orgs_for_user         GET  '/users/pistotester3/orgs'
+          probe write_comment_outside POST '/repos/b74-hunt-labs/b74-priv/issues/1/comments' \
+            "{\"body\":\"d1 job-token write probe $MARKER\"}"
+
+          python3 - <<'PY'
+          import json
+          rows=[json.loads(l) for l in open('/tmp/probes.ndjson') if l.strip()]
+          json.dump({"marker":"__MARKER__","count":len(rows),"probes":rows},
+                    open('out/probe.json','w'), indent=2)
+          print("WROTE", len(rows), "probes")
+          PY
+          sed -i "s/__MARKER__/${MARKER}/" out/probe.json
+          echo "===== PROBE SUMMARY ====="
+          cat out/probe.json
+
+      - name: write inside repo (issues)
+        env:
+          JT: ${{ github.token }}
+          MARKER: ${{ inputs.marker }}
+        run: |
+          body="{\"body\":\"d1 inside issue-comment probe $MARKER\"}"
+          code=$(curl -sS -o /tmp/wi.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $JT" -H "Accept: application/vnd.github+json" \
+            -d "$body" "https://api.github.com/repos/pistotester3/fixture-a/issues/1/comments" || echo 000)
+          echo "INSIDE_ISSUE_COMMENT=${code}"
+          head -c 200 /tmp/wi.json; echo
+          python3 -c "import json;print('COMMENT_ID',json.load(open('/tmp/wi.json')).get('id'))" 2>/dev/null || true
+
+      - name: cache save on this branch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          MARKER: ${{ inputs.marker }}
+        run: |
+          mkdir -p cache-dir
+          echo "written-on=${GITHUB_REF_NAME} marker=${MARKER}" > cache-dir/marker.txt
+          cat cache-dir/marker.txt
+
+      - name: cache roundtrip
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: cache-dir
+          key: d1-cache-${{ github.ref_name }}-${{ inputs.marker }}
+          restore-keys: |
+            d1-cache-
+      - name: cache result
+        run: |
+          echo "CACHE_HIT=${{ steps.cache.outputs.cache-hit }}"
+          echo "CACHE_MATCHED_KEY=${{ steps.cache.outputs.cache-matched-key }}"
+          echo "--- restored marker.txt (if any) ---"
+          cat cache-dir/marker.txt 2>/dev/null || echo "(no marker.txt restored; cache miss)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: d1-probe-${{ inputs.marker }}
+          path: out/probe.json
+          retention-days: 1
